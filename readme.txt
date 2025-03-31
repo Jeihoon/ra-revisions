@@ -2,7 +2,7 @@
 
 **Version:** 2.1  
 **Author:** Amin Rahnama  
-**Plugin URI:** [https://mypixellab.com](https://mypixellab.com)
+**Plugin URI:** [https://mypixellab.com]
 
 ---
 
