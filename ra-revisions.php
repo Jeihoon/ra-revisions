@@ -2,8 +2,8 @@
 /*
 Plugin Name: RA Revisions 
 Plugin URI:  https://mypixellab.com
-Description: A plugin to limit and clear post revisions in WordPress.
-Version: 1.5
+Description: A plugin to limit and clear post revisions in WordPress with scheduling options.
+Version: 2.1
 Author: Amin Rahnama
 Author URI: https://mypixellab.com
 License: GPL2
@@ -13,21 +13,20 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-// Add admin menu for settings
+// ========== ADMIN MENU ==========
 function ra_revisions_menu() {
-    if (current_user_can('manage_options')) {
-        add_options_page(
-            'RA Revisions Settings',
-            'RA Revisions',
-            'manage_options',
-            'ra-revisions',
-            'ra_revisions_settings_page'
-        );
-    }
+    add_menu_page(
+        'RA Revisions Settings',       // Page title
+        'RA Revisions',                // Menu title
+        'manage_options',              // Capability
+        'ra-revisions',                // Menu slug
+        'ra_revisions_settings_page',  // Callback function
+        'dashicons-update',           // Icon (WordPress Dashicon)
+        25                             // Position in the menu
+    );
 }
 add_action('admin_menu', 'ra_revisions_menu');
 
-// Display the settings page
 function ra_revisions_settings_page() {
     ?>
     <div class="wrap">
@@ -43,46 +42,25 @@ function ra_revisions_settings_page() {
             ?>
         </form>
 
-        <h3>Clear Old Revisions</h3>
-        <p>Click the button below to delete old revisions, keeping only the number set above.</p>
+        <h3>Clear Old Revisions Manually</h3>
         <form method="post">
             <?php
             wp_nonce_field('ra_clear_revisions', 'ra_clear_revisions_nonce');
-            submit_button('Clear Revisions', 'delete', 'ra_clear_revisions_submit');
+            submit_button('Clear Revisions Now', 'delete', 'ra_clear_revisions_submit');
             ?>
         </form>
-
-        <?php ra_display_revision_logs(); ?>
     </div>
     <?php
 }
 
-// Display current revision stats
-function ra_display_revision_stats() {
-    global $wpdb;
-    $count = $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->posts} WHERE post_type = 'revision'");
-    echo "<p><strong>Total revisions in database:</strong> $count</p>";
-}
-
-// Show revision log
-function ra_display_revision_logs() {
-    $log = get_option('ra_revision_log', []);
-    if (!empty($log)) {
-        echo '<h3>Recent Deletion Log</h3><ul>';
-        foreach (array_reverse($log) as $entry) {
-            echo '<li><strong>' . esc_html($entry['time']) . ':</strong> Deleted revisions: ' . esc_html(implode(', ', $entry['deleted_ids'])) . '</li>';
-        }
-        echo '</ul>';
-    }
-}
-
-// Register setting for storing revision limit
+// ========== SETTINGS ==========
 function ra_register_settings() {
     register_setting('ra_revisions_settings_group', 'ra_revision_limit');
+    register_setting('ra_revisions_settings_group', 'ra_cleanup_frequency');
 
     add_settings_section(
         'ra_revisions_section',
-        'Set Maximum Revisions',
+        'Revisions Limit and Schedule',
         'ra_revisions_section_callback',
         'ra-revisions'
     );
@@ -94,38 +72,53 @@ function ra_register_settings() {
         'ra-revisions',
         'ra_revisions_section'
     );
+
+    add_settings_field(
+        'ra_cleanup_frequency',
+        'Scheduled Cleanup Frequency:',
+        'ra_cleanup_frequency_callback',
+        'ra-revisions',
+        'ra_revisions_section'
+    );
 }
 add_action('admin_init', 'ra_register_settings');
 
-// Section description
 function ra_revisions_section_callback() {
-    echo '<p>Define the number of revisions WordPress should keep for posts and pages.</p>';
+    echo '<p>Set how many revisions to keep, and how often to run automatic cleanup.</p>';
 }
 
-// Input field
 function ra_revision_limit_callback() {
     $limit = get_option('ra_revision_limit', 5);
     echo "<input type='number' name='ra_revision_limit' value='" . esc_attr($limit) . "' min='1' />";
 }
 
-// Apply limit dynamically
+function ra_cleanup_frequency_callback() {
+    $value = get_option('ra_cleanup_frequency', 'daily');
+    ?>
+    <select name="ra_cleanup_frequency">
+        <option value="daily" <?php selected($value, 'daily'); ?>>Daily</option>
+        <option value="weekly" <?php selected($value, 'weekly'); ?>>Weekly</option>
+        <option value="monthly" <?php selected($value, 'monthly'); ?>>Monthly</option>
+    </select>
+    <p class="description">How often should automatic revision cleanup run?</p>
+    <?php
+}
+
+// ========== STATS ==========
+function ra_display_revision_stats() {
+    global $wpdb;
+    $count = $wpdb->get_var("SELECT COUNT(*) FROM {$wpdb->posts} WHERE post_type = 'revision'");
+    echo "<p><strong>Total revisions in database:</strong> $count</p>";
+}
+
+// ========== LIMIT FILTER ==========
 function ra_limit_revisions($num, $post) {
     $limit = get_option('ra_revision_limit', 5);
     return is_numeric($limit) ? max(1, intval($limit)) : 5;
 }
 add_filter('wp_revisions_to_keep', 'ra_limit_revisions', 10, 2);
 
-// Log deleted revision IDs
-function ra_log_deleted_revisions($ids) {
-    $log = get_option('ra_revision_log', []);
-    $log[] = [
-        'time' => current_time('mysql'),
-        'deleted_ids' => $ids,
-    ];
-    update_option('ra_revision_log', array_slice($log, -10)); // Keep last 10 entries
-}
-
-// Delete revisions
+// ========== MANUAL CLEANUP ==========
 function ra_clear_old_revisions() {
     if (
         !empty($_POST['ra_clear_revisions_submit']) &&
@@ -139,7 +132,7 @@ function ra_clear_old_revisions() {
 }
 add_action('admin_init', 'ra_clear_old_revisions');
 
-// Actual deletion logic
+// ========== CLEANUP LOGIC ==========
 function ra_run_revision_cleanup() {
     global $wpdb;
     $limit = get_option('ra_revision_limit', 5);
@@ -152,8 +145,6 @@ function ra_run_revision_cleanup() {
         GROUP BY post_parent
         HAVING revision_count > $limit
     ");
-
-    $deleted_ids = [];
 
     foreach ($posts_with_revisions as $post) {
         $post_id = intval($post->post_parent);
@@ -169,17 +160,49 @@ function ra_run_revision_cleanup() {
         if (!empty($revisions_to_delete)) {
             $revisions_ids = implode(',', array_map('intval', $revisions_to_delete));
             $wpdb->query("DELETE FROM {$wpdb->posts} WHERE ID IN ($revisions_ids)");
-            $deleted_ids = array_merge($deleted_ids, $revisions_to_delete);
         }
     }
 
-    if (!empty($deleted_ids)) {
-        ra_log_deleted_revisions($deleted_ids);
-        set_transient('ra_cleanup_notice', true, 60); // Show admin notice
-    }
+    set_transient('ra_cleanup_notice', true, 60);
 }
 
-// Admin notices
+// ========== CRON SETUP ==========
+function ra_schedule_revision_cleanup() {
+    $frequency = get_option('ra_cleanup_frequency', 'daily');
+    if (!wp_next_scheduled('ra_daily_revision_cleanup')) {
+        wp_schedule_event(time(), $frequency, 'ra_daily_revision_cleanup');
+    }
+}
+register_activation_hook(__FILE__, 'ra_schedule_revision_cleanup');
+
+function ra_clear_revision_cleanup_schedule() {
+    wp_clear_scheduled_hook('ra_daily_revision_cleanup');
+}
+register_deactivation_hook(__FILE__, 'ra_clear_revision_cleanup_schedule');
+
+add_action('ra_daily_revision_cleanup', 'ra_run_revision_cleanup');
+
+// Add 'monthly' to cron schedules
+function ra_add_custom_cron_schedules($schedules) {
+    $schedules['monthly'] = [
+        'interval' => 2592000,
+        'display'  => __('Once Monthly')
+    ];
+    return $schedules;
+}
+add_filter('cron_schedules', 'ra_add_custom_cron_schedules');
+
+// Reschedule when frequency changes
+function ra_reschedule_cleanup_if_needed($old_value, $new_value) {
+    $old_freq = get_option('ra_cleanup_frequency', 'daily');
+    if ($old_freq !== $new_value) {
+        wp_clear_scheduled_hook('ra_daily_revision_cleanup');
+        wp_schedule_event(time(), $new_value, 'ra_daily_revision_cleanup');
+    }
+}
+add_action('update_option_ra_cleanup_frequency', 'ra_reschedule_cleanup_if_needed', 10, 2);
+
+// ========== ADMIN NOTICES ==========
 function ra_admin_notices() {
     if (isset($_GET['cleared']) && $_GET['cleared'] === 'true') {
         echo '<div class="updated notice is-dismissible"><p>Manual revision cleanup complete!</p></div>';
@@ -191,23 +214,3 @@ function ra_admin_notices() {
     }
 }
 add_action('admin_notices', 'ra_admin_notices');
-
-
-// ---------- CRON-BASED CLEANUP ----------
-
-// Schedule cleanup on plugin activation
-function ra_schedule_revision_cleanup() {
-    if (!wp_next_scheduled('ra_daily_revision_cleanup')) {
-        wp_schedule_event(time(), 'daily', 'ra_daily_revision_cleanup');
-    }
-}
-register_activation_hook(__FILE__, 'ra_schedule_revision_cleanup');
-
-// Unschedule on plugin deactivation
-function ra_clear_revision_cleanup_schedule() {
-    wp_clear_scheduled_hook('ra_daily_revision_cleanup');
-}
-register_deactivation_hook(__FILE__, 'ra_clear_revision_cleanup_schedule');
-
-// Cron event handler
-add_action('ra_daily_revision_cleanup', 'ra_run_revision_cleanup');
